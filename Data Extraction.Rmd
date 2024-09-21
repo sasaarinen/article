@@ -1,0 +1,239 @@
+---
+title: "Content Analyzer"
+author: "Samuli Saarinen"
+date: "12/2/2021"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r Extraction API}
+import praw
+import tweepy
+import json
+
+# Reddit API Setup
+def reddit_auth():
+    reddit = praw.Reddit(
+        client_id="your_reddit_client_id",
+        client_secret="your_reddit_client_secret",
+        user_agent="your_reddit_user_agent"
+    )
+    return reddit
+
+def get_reddit_posts(subreddit_name, limit=10):
+    reddit = reddit_auth()
+    subreddit = reddit.subreddit(subreddit_name)
+    posts = []
+    for submission in subreddit.hot(limit=limit):
+        posts.append({
+            'title': submission.title,
+            'score': submission.score,
+            'url': submission.url,
+            'created_utc': submission.created_utc
+        })
+    return posts
+
+# Twitter API Setup
+def twitter_auth():
+    consumer_key = "your_twitter_api_key"
+    consumer_secret = "your_twitter_api_secret"
+    access_token = "your_access_token"
+    access_token_secret = "your_access_token_secret"
+
+    auth = tweepy.OAuth1UserHandler(
+        consumer_key, consumer_secret, access_token, access_token_secret
+    )
+    api = tweepy.API(auth)
+    return api
+
+def get_twitter_posts(username, count=10):
+    api = twitter_auth()
+    tweets = []
+    for tweet in tweepy.Cursor(api.user_timeline, screen_name=username, tweet_mode="extended").items(count):
+        tweets.append({
+            'created_at': tweet.created_at,
+            'text': tweet.full_text,
+            'retweet_count': tweet.retweet_count,
+            'favorite_count': tweet.favorite_count
+        })
+    return tweets
+
+# Combine Reddit and Twitter Data into one Response
+def fetch_reddit_and_twitter(subreddit, twitter_user, limit=10):
+    reddit_posts = get_reddit_posts(subreddit, limit)
+    twitter_posts = get_twitter_posts(twitter_user, limit)
+    
+    data = {
+        'reddit': reddit_posts,
+        'twitter': twitter_posts
+    }
+    
+    return json.dumps(data, indent=4)
+
+# Example usage
+if __name__ == "__main__":
+    subreddit_name = 'python'
+    twitter_username = 'python_tip'
+    limit = 5
+    
+    combined_data = fetch_reddit_and_twitter(subreddit_name, twitter_username, limit)
+    print(combined_data)
+
+```
+
+
+```{r Importing the data and packages, message=FALSE, warning=FALSE, include=FALSE}
+library(dplyr)
+library(lubridate)
+library(quanteda)
+library(ggplot2)
+library(readr)
+library(readtext)
+library(quanteda.textstats)
+library(stargazer)
+
+reddit <- read_csv("reddit_wsb.csv")
+reddit2 <- readtext("reddit_wsb.csv")
+GME <- read_delim("GME.csv", delim = ";", 
+    escape_double = FALSE, trim_ws = TRUE)
+index <- read_delim("index.csv", delim = ";", 
+    escape_double = FALSE, trim_ws = TRUE)
+BBY <- read_delim("BBY.csv", delim = ";", 
+    escape_double = FALSE, trim_ws = TRUE)
+```
+
+```{r Cleaning and creating of the subgroups, message=FALSE, warning=FALSE, include=FALSE}
+reddit$timestamp <- ymd_hms(reddit$timestamp)
+corp_red <- corpus(reddit2)
+summary(corp_red)
+
+corp_red_token <- tokens(corp_red) %>%
+  tokens_keep(pattern = "🚀") 
+corp_red_dfm <- dfm(corp_red_token) 
+
+corp_red_frequency <- textstat_frequency(corp_red_dfm, n = 5, groups = timestamp)
+
+corp_red_frequency$group <- as.Date(corp_red_frequency$group)
+list <- aggregate(corp_red_frequency$frequency, by=list(corp_red_frequency$group), sum)
+list.change <- list %>%
+  mutate(change = c(0,diff(list$x)))
+
+list.change1 <- tail(list.change, 149)
+rows <- nrow(list.change1)
+list.change1[rows + 1, ] <- NA
+
+  
+list.change2 <- list.change1 %>%
+  mutate('Change in %' = (list.change1$change / list.change$x)*100)
+list.change2 <- na.omit(list.change2)
+
+list <- list %>%
+  mutate('Change in %' = c(0,list.change2$`Change in %`))
+library(writexl)
+write_xlsx(list.change2, "data_rocket.xlsx")
+```
+
+```{r graph }
+buy.graph <- ggplot(list, aes(x = Group.1, y = x))+
+  geom_line(aes(y=x))
+buy.graph
+
+buy.change.graph <- ggplot(list, aes(x = Group.1, y = `Change in %`))+
+  geom_line(aes(y = `Change in %`))
+buy.change.graph
+```
+
+```{r Creating weekday variable and removing the weekends}
+list$Group.1 <- ymd(list$Group.1)
+list <- list %>%
+  mutate(Weekday = weekdays(list$Group.1))
+
+list <- list[! list$Weekday == "Saturday",]
+list <- list[! list$Weekday == "Sunday",] 
+```
+
+```{r Cleaning the stock price data}
+GME$`Change %` <- as.factor(GME$`Change %`)
+GME$`Change %` <- varhandle::unfactor(GME$`Change %`)
+GME$`Change %` <- gsub("%", "",GME$`Change %`)
+GME$`Change %` <- gsub(",", ".",GME$`Change %`)
+GME$`Change %` <- as.numeric(GME$`Change %`)/100
+
+index$`Change %` <- as.factor(index$`Change %`)
+index$`Change %` <- varhandle::unfactor(index$`Change %`)
+index$`Change %` <- gsub("%", "",index$`Change %`)
+index$`Change %` <- gsub(",", ".",index$`Change %`)
+index$`Change %` <- as.numeric(index$`Change %`)/100
+
+BBY$`Change %` <- as.factor(BBY$`Change %`)
+BBY$`Change %` <- varhandle::unfactor(BBY$`Change %`)
+BBY$`Change %` <- gsub("%", "",BBY$`Change %`)
+BBY$`Change %` <- gsub(",", ".",BBY$`Change %`)
+BBY$`Change %` <- as.numeric(BBY$`Change %`)/100
+
+GME$Date <- dmy(GME$Date)
+GME <- GME %>%
+  arrange(Date)
+index$Date <- dmy(index$Date)
+index <- index %>%
+  arrange(Date)
+
+BBY$Date <- dmy(BBY$Date)
+BBY <- BBY %>%
+  arrange(Date)
+```
+
+
+```{r correlation test}
+list.corr <- head(list, 10)
+gme.corr <- GME
+gme.corr$`Change %` <- GME$`Change %`*100
+
+list.final <- list.corr %>%
+  mutate(Date = list.corr$Group.1, Word_change = list.corr$`Change in %`, Stock_change = gme.corr$`Change %`) %>%
+  select(Date, Word_change, Stock_change)
+
+correlation <- cor(list.final$Word_change, list.final$Stock_change)
+correlation
+
+Dependent_variable <- list.final$Stock_change
+Indipendent_variable <- list.final$Word_change
+test.regression <- lm(Dependent_variable ~  Indipendent_variable)
+summary(test.regression)
+stargazer(test.regression, type = "html",report=('vc*ps'), out = "test_regression.html")
+
+Dependent_variable2 <- index$`Change %`
+Indipendent_variable2 <- GME$`Change %`
+test.regression2 <- lm(Dependent_variable2 ~  Indipendent_variable2)
+summary(test.regression2)
+stargazer(test.regression2, type = "html",report=('vc*ps'), out = "test_regression2.html")
+
+Dependent_variable3 <- index$`Change %`
+Indipendent_variable3 <- BBY$`Change %`
+test.regression3 <- lm(Dependent_variable3 ~  Indipendent_variable3)
+summary(test.regression3)
+stargazer(test.regression3, type = "html",report=('vc*ps'), out = "test_regression3.html")
+
+non_synchro <- 1- summary(test.regression2)$r.squared
+non_synchro
+
+non_synchro2 <- 1- summary(test.regression3)$r.squared
+```
+
+
+```{r correlation test 2}
+non_synchro2
+```
+
+```{r  stock graph }
+stock.graph <- ggplot(gme.corr, aes(x = Date, y = `Change %`))+
+geom_line(aes(y = `Change %`))
+stock.graph
+```
+
